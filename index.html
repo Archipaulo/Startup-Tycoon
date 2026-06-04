@@ -1,0 +1,1356 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Startup Tycoon</title>
+<style>html,body,#root{height:100%;margin:0;background:#07100B;}</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<div id="err" style="display:none;position:fixed;inset:0;padding:20px;color:#fff;font:13px/1.5 monospace;background:#160a0a;white-space:pre-wrap;overflow:auto;z-index:99999;"></div>
+<script>
+(function(){
+  function show(msg){ var e=document.getElementById('err'); if(e){ e.style.display='block'; e.textContent='⚠️ '+msg; } }
+  window.__show=show;
+  window.addEventListener('error', function(ev){ show('Erreur : '+((ev.error&&ev.error.stack)||ev.message||'?')); });
+  window.addEventListener('unhandledrejection', function(ev){ show('Erreur : '+((ev.reason&&ev.reason.message)||ev.reason)); });
+  window.addEventListener('load', function(){
+    setTimeout(function(){
+      if (typeof React==='undefined' || typeof Babel==='undefined'){
+        show("React n'a pas pu se charger.\n\nCa arrive quand le fichier est ouvert sans connexion internet, ou dans un environnement qui bloque les scripts externes (comme l'apercu du chat).\n\nDeploie le fichier (Netlify Drop / GitHub Pages) et ouvre l'adresse, ou ouvre-le dans un vrai navigateur avec internet.");
+        return;
+      }
+      var r=document.getElementById('root');
+      if (r && r.children.length===0){ show("Le jeu ne s'est pas affiche (root vide). Si tu es dans l'apercu du chat, c'est normal : telecharge le fichier et ouvre-le dans Safari/Chrome, ou deploie-le."); }
+    }, 3000);
+  });
+})();
+</script>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+// Sauvegarde via le navigateur (remplace le window.storage de l'aperçu Claude)
+window.storage = {
+  async get(k){ const v = localStorage.getItem(k); if (v === null) throw new Error("missing"); return { key:k, value:v }; },
+  async set(k, val){ localStorage.setItem(k, val); return { key:k, value:val }; },
+  async delete(k){ localStorage.removeItem(k); return { key:k, deleted:true }; },
+  async list(){ return { keys: Object.keys(localStorage) }; },
+};
+
+const STORAGE_KEY = "startup_tycoon";
+const PROFILE_KEY = "tycoon_profile";   // profil local (connexion SIMULÉE)
+const PROVIDERS = [
+  { id: "google", label: "Continuer avec Google", icon: "G", bg: "#FFFFFF", fg: "#1A1306", bd: "#E2E5EA" },
+  { id: "facebook", label: "Continuer avec Facebook", icon: "f", bg: "#1877F2", fg: "#FFFFFF", bd: "#1877F2" },
+  { id: "apple", label: "Continuer avec iCloud", icon: "", bg: "#000000", fg: "#FFFFFF", bd: "#000000" },
+];
+const OFFLINE_CAP = 3 * 24 * 3600;   // gains hors-ligne plafonnés à 3 JOURS
+const OFFLINE_RATE = 0.25;           // 25% du revenu/sec hors-ligne
+const PREMIUM_OFFLINE_RATE = 0.5;    // 50% avec le Pass Premium
+const PREMIUM_MULT = 1.25;           // +25% de revenus avec le Premium
+const XP_PER_LEVEL = 2;              // points de quête pour 1 niveau de Pass
+const PASS_MAX = 50;                 // niveau maximum du Pass
+const AD_INTERVAL = 3 * 3600 * 1000; // pub boost disponible toutes les 3h
+const AD_BOOST_MS = 120000;          // durée du boost x2 obtenu (2 min)
+
+const BASE_STARTUPS = [
+  { id: "trott", emoji: "🛴", name: "App de trottinettes", cost: 0, unlockNextAt: 25,
+    stats: [
+      { id: "mkt", emoji: "📣", name: "Marketing", baseCost: 10, income: 0.3, growth: 1.18 },
+      { id: "tech", emoji: "⚙️", name: "Tech", baseCost: 16, income: 0.5, growth: 1.18 },
+      { id: "part", emoji: "🤝", name: "Partenariats", baseCost: 24, income: 0.8, growth: 1.2 },
+      { id: "ux", emoji: "🎨", name: "Design", baseCost: 34, income: 1.1, growth: 1.2 },
+      { id: "data", emoji: "📊", name: "Données", baseCost: 46, income: 1.5, growth: 1.21 },
+    ] },
+  { id: "food", emoji: "🍔", name: "Livraison de repas", cost: 5000, unlockNextAt: 25,
+    stats: [
+      { id: "mkt", emoji: "📣", name: "Marketing", baseCost: 600, income: 6, growth: 1.18 },
+      { id: "logi", emoji: "🛵", name: "Logistique", baseCost: 900, income: 9, growth: 1.19 },
+      { id: "resto", emoji: "👨‍🍳", name: "Restos partenaires", baseCost: 1400, income: 14, growth: 1.2 },
+      { id: "pub", emoji: "📺", name: "Publicité", baseCost: 2000, income: 20, growth: 1.2 },
+      { id: "appli", emoji: "📱", name: "Appli mobile", baseCost: 2800, income: 28, growth: 1.21 },
+    ] },
+  { id: "game", emoji: "🎮", name: "Studio de jeux", cost: 600000, unlockNextAt: 25,
+    stats: [
+      { id: "design", emoji: "🎨", name: "Game design", baseCost: 70000, income: 130, growth: 1.18 },
+      { id: "ua", emoji: "📈", name: "Acquisition", baseCost: 95000, income: 180, growth: 1.19 },
+      { id: "serv", emoji: "💾", name: "Serveurs", baseCost: 130000, income: 240, growth: 1.2 },
+      { id: "com", emoji: "💬", name: "Communauté", baseCost: 175000, income: 320, growth: 1.2 },
+      { id: "esport", emoji: "🏆", name: "Esport", baseCost: 240000, income: 430, growth: 1.21 },
+    ] },
+  { id: "ai", emoji: "🤖", name: "Startup IA", cost: 6e7, unlockNextAt: 25,
+    stats: [
+      { id: "model", emoji: "🧠", name: "Modèle", baseCost: 7e6, income: 3200, growth: 1.18 },
+      { id: "data", emoji: "💽", name: "Data", baseCost: 1e7, income: 4500, growth: 1.19 },
+      { id: "gpu", emoji: "🖥️", name: "GPU", baseCost: 1.4e7, income: 6000, growth: 1.2 },
+      { id: "api", emoji: "🔌", name: "API", baseCost: 1.9e7, income: 8000, growth: 1.2 },
+      { id: "ent", emoji: "🏛️", name: "Entreprises", baseCost: 2.6e7, income: 11000, growth: 1.21 },
+    ] },
+  { id: "space", emoji: "🚀", name: "Conglomérat spatial", cost: 7e9, unlockNextAt: 25,
+    stats: [
+      { id: "sat", emoji: "🛰️", name: "Satellites", baseCost: 8e8, income: 90000, growth: 1.18 },
+      { id: "fac", emoji: "🏭", name: "Usines", baseCost: 1.1e9, income: 130000, growth: 1.19 },
+      { id: "rnd", emoji: "👩‍🚀", name: "R&D", baseCost: 1.5e9, income: 180000, growth: 1.2 },
+      { id: "min", emoji: "⛏️", name: "Minage spatial", baseCost: 2e9, income: 240000, growth: 1.2 },
+      { id: "col", emoji: "🪐", name: "Colonies", baseCost: 2.7e9, income: 320000, growth: 1.21 },
+    ] },
+];
+
+// Au-delà des startups "faites main", on en génère à l'infini (jusqu'à un cap
+// raisonnable pour éviter que les nombres dépassent les limites de JavaScript).
+const GEN_NAMES = [
+  { name: "Méga-usine", emoji: "🏭" }, { name: "Réseau neuronal", emoji: "🧬" },
+  { name: "Colonie lunaire", emoji: "🌙" }, { name: "Cité flottante", emoji: "🏙️" },
+  { name: "Réacteur à fusion", emoji: "⚛️" }, { name: "Mine d'astéroïdes", emoji: "☄️" },
+  { name: "Ferme à galaxies", emoji: "🌌" }, { name: "Ordinateur quantique", emoji: "🔮" },
+  { name: "Sphère de Dyson", emoji: "☀️" }, { name: "Portail multivers", emoji: "🌀" },
+];
+const MAX_STARTUPS = 50;
+
+function getStartup(i) {
+  if (i < BASE_STARTUPS.length) return BASE_STARTUPS[i];
+  const t = i - BASE_STARTUPS.length;          // 0, 1, 2...
+  const g = GEN_NAMES[t % GEN_NAMES.length];
+  const cycle = Math.floor(t / GEN_NAMES.length) + 1;
+  const base = 1e9 * Math.pow(12, t + 1);      // coût de stat qui explose
+  const inc = 1e5 * Math.pow(10, t + 1);       // revenu qui explose
+  return {
+    id: `s${i}`, emoji: g.emoji,
+    name: cycle > 1 ? `${g.name} ${cycle}` : g.name,
+    cost: 7e9 * Math.pow(12, t + 1), unlockNextAt: 25,
+    stats: [
+      { id: "a", emoji: "📣", name: "Croissance", baseCost: base, income: inc, growth: 1.18 },
+      { id: "b", emoji: "⚙️", name: "Opérations", baseCost: base * 1.4, income: inc * 1.4, growth: 1.19 },
+      { id: "c", emoji: "🔬", name: "Innovation", baseCost: base * 1.9, income: inc * 1.9, growth: 1.2 },
+      { id: "d", emoji: "🌐", name: "Expansion", baseCost: base * 2.5, income: inc * 2.5, growth: 1.2 },
+      { id: "e", emoji: "🚀", name: "Disruption", baseCost: base * 3.2, income: inc * 3.2, growth: 1.21 },
+    ],
+  };
+}
+
+// Quêtes : des paliers qui rapportent des points de Pass (XP). Chaque palier
+// terminé fait avancer la quête au palier suivant -> progression sans fin.
+const QUESTS = [
+  { id: "cash", emoji: "💰", label: "Trésorier", verb: "Atteins", metric: "money", money: true,
+    targets: [500, 5000, 50000, 1e6, 5e7, 1e9], xp: [1, 1, 2, 2, 3, 3] },
+  { id: "build", emoji: "🔧", label: "Bâtisseur", verb: "Fais", unit: "améliorations", metric: "upgrades",
+    targets: [5, 15, 30, 50, 80, 120], xp: [1, 1, 2, 2, 3, 3] },
+  { id: "empire", emoji: "🏢", label: "Empire", verb: "Possède", unit: "startups", metric: "owned",
+    targets: [2, 3, 4, 5], xp: [2, 2, 3, 4] },
+  { id: "click", emoji: "👆", label: "Bosseur", verb: "Clique", unit: "fois", metric: "clicks",
+    targets: [25, 100, 300, 800, 2000], xp: [1, 1, 2, 2, 3] },
+  { id: "rate", emoji: "⚡", label: "Machine à cash", verb: "Atteins", unit: "€/s", metric: "income", money: true,
+    targets: [50, 500, 5000, 5e4, 5e5, 5e6], xp: [1, 2, 2, 3, 3, 4] },
+];
+
+// Objectifs : quêtes spécifiques à faire UNE fois, qui donnent de l'XP de pass.
+const OBJECTIVES = [
+  { id: "design10", emoji: "🎨", label: "Monte Design (trottinettes) au niv. 10", xp: 3, check: (g) => (g.levels["trott_ux"] || 0) >= 10 },
+  { id: "mkt15", emoji: "📣", label: "Marketing (trottinettes) au niv. 15", xp: 3, check: (g) => (g.levels["trott_mkt"] || 0) >= 15 },
+  { id: "food", emoji: "🍔", label: "Débloque la Livraison de repas", xp: 2, check: (g) => g.owned >= 2 },
+  { id: "gamedl", emoji: "🎮", label: "Débloque le Studio de jeux", xp: 4, check: (g) => g.owned >= 3 },
+  { id: "esport5", emoji: "🏆", label: "Esport (studio de jeux) au niv. 5", xp: 5, check: (g) => (g.levels["game_esport"] || 0) >= 5 },
+  { id: "rich", emoji: "💎", label: "Atteins 10 M€ en banque", xp: 4, check: (g) => g.money >= 1e7 },
+  { id: "stock", emoji: "📈", label: "Détiens des actions en bourse", xp: 3, check: (g) => Object.values(g.holdings || {}).some((v) => v > 0) },
+  { id: "theme", emoji: "🎨", label: "Débloque un thème dans la boutique", xp: 3, check: (g) => Object.keys(g.themesOwned || {}).length >= 2 },
+  { id: "prem", emoji: "⭐", label: "Active le Pass Premium", xp: 4, check: (g) => g.premium },
+  { id: "prestige", emoji: "🔄", label: "Fais ton premier prestige", xp: 6, check: (g) => g.prestige >= 1 },
+];
+
+// XP de pass : courbe croissante. XP total pour ATTEINDRE le niveau L.
+const passCumXP = (L) => L + (L * (L + 1)) / 2;     // coût du niveau n = n+1 (donc gaps 2,3,4,5...)
+function passLevelFromXP(xp) {
+  let L = 0;
+  while (L < PASS_MAX && passCumXP(L + 1) <= xp) L++;
+  return L;
+}
+
+const RANKS = ["Fondateur 🌱", "Serial entrepreneur 🔥", "Investisseur 💼", "Magnat 🏙️", "Légende 👑"];
+
+const PAGE_INFO = {
+  startups: { emoji: "🏢", label: "Startups" },
+  quetes: { emoji: "🎯", label: "Quêtes" },
+  pass: { emoji: "⭐", label: "Pass" },
+  classement: { emoji: "🏆", label: "Classement" },
+  prestige: { emoji: "🔄", label: "Prestige" },
+  succes: { emoji: "🏅", label: "Succès" },
+  boutique: { emoji: "🎨", label: "Thèmes" },
+  bourse: { emoji: "📈", label: "Bourse" },
+};
+
+// Succès : se débloquent tout seuls et donnent +3% de revenus permanents chacun.
+const ACHIEVEMENTS = [
+  { id: "s2", emoji: "🥇", name: "Premier pas", desc: "Possède 2 startups", check: (g) => g.owned >= 2 },
+  { id: "s5", emoji: "🏢", name: "Conglomérat", desc: "Possède 5 startups", check: (g) => g.owned >= 5 },
+  { id: "s10", emoji: "🌍", name: "Multinationale", desc: "Possède 10 startups", check: (g) => g.owned >= 10 },
+  { id: "m6", emoji: "💰", name: "Millionnaire", desc: "Atteins 1 M€", check: (g) => g.money >= 1e6 },
+  { id: "m9", emoji: "💎", name: "Milliardaire", desc: "Atteins 1 Md€", check: (g) => g.money >= 1e9 },
+  { id: "clk", emoji: "👆", name: "Clic frénétique", desc: "Clique 500 fois", check: (g) => g.clicks >= 500 },
+  { id: "up", emoji: "🔧", name: "Bâtisseur", desc: "100 améliorations", check: (g) => g.upgrades >= 100 },
+  { id: "prem", emoji: "⭐", name: "VIP", desc: "Active le Pass Premium", check: (g) => g.premium },
+  { id: "pres", emoji: "🔄", name: "Renaissance", desc: "Fais ton 1er prestige", check: (g) => g.prestige >= 1 },
+];
+
+// Arbre de prestige : on dépense des points de prestige dans ces bonus permanents.
+// Coût pour passer au niveau L : (L+1) points.
+const PERKS = [
+  { id: "inv", emoji: "💰", name: "Investisseur", desc: "+10% de revenus / niveau", max: 10 },
+  { id: "clk", emoji: "👆", name: "Clic boosté", desc: "+100% puissance de clic / niveau", max: 5 },
+  { id: "off", emoji: "💤", name: "Marathonien", desc: "+5% gains hors-ligne / niveau", max: 6 },
+  { id: "cost", emoji: "🏷️", name: "Soldes", desc: "-2% coût des améliorations / niveau", max: 10 },
+];
+const perkSpent = (perks) => PERKS.reduce((s, p) => { const l = perks[p.id] || 0; return s + (l * (l + 1)) / 2; }, 0);
+
+// Thèmes (cosmétiques) : changent les couleurs du jeu. Débloquables avec l'argent du jeu.
+const THEMES = [
+  { id: "emeraude", name: "Émeraude", cost: 0, accent: "#34D399", bright: "#4ADE80", deep: "#16A34A", rgb: "52,211,153", bg: "#07100B" },
+  { id: "ocean", name: "Océan", cost: 50000, accent: "#38BDF8", bright: "#38BDF8", deep: "#0284C7", rgb: "56,189,248", bg: "#060D14" },
+  { id: "sunset", name: "Sunset", cost: 5e6, accent: "#FB923C", bright: "#FB923C", deep: "#EA580C", rgb: "251,146,60", bg: "#140B07" },
+  { id: "violet", name: "Violet", cost: 5e8, accent: "#A78BFA", bright: "#A78BFA", deep: "#7C3AED", rgb: "167,139,250", bg: "#0E0A16" },
+  { id: "rose", name: "Rose néon", cost: 1e9, accent: "#F472B6", bright: "#F472B6", deep: "#DB2777", rgb: "244,114,182", bg: "#140810" },
+];
+
+// Actions de la mini-bourse : prix de départ + volatilité (variation max par tick)
+const STOCKS = [
+  { id: "tek", name: "TekCorp", emoji: "💻", base: 100, vol: 0.05 },
+  { id: "grn", name: "GreenNRG", emoji: "🌱", base: 45, vol: 0.06 },
+  { id: "bio", name: "BioGen", emoji: "🧬", base: 220, vol: 0.07 },
+  { id: "spc", name: "AstroX", emoji: "🚀", base: 600, vol: 0.08 },
+  { id: "mem", name: "DogeMoon", emoji: "🐶", base: 8, vol: 0.16 },
+];
+const initPrices = () => Object.fromEntries(STOCKS.map((s) => [s.id, s.base]));
+const initHist = () => Object.fromEntries(STOCKS.map((s) => [s.id, [s.base]]));
+
+// Adversaires SIMULÉS (un vrai classement mondial nécessiterait un serveur).
+const BOARD_FR = [
+  { name: "LeStratège", flag: "🇫🇷", level: 58, money: 4.2e6, startup: 6 },
+  { name: "StartupQueen", flag: "🇫🇷", level: 47, money: 1.8e6, startup: 5 },
+  { name: "DevNinja75", flag: "🇫🇷", level: 41, money: 9.5e5, startup: 5 },
+  { name: "MarieScale", flag: "🇫🇷", level: 36, money: 6.2e5, startup: 4 },
+  { name: "ParisVC", flag: "🇫🇷", level: 31, money: 4.1e5, startup: 4 },
+  { name: "LyonBuilder", flag: "🇫🇷", level: 25, money: 1.8e5, startup: 3 },
+  { name: "TechBro92", flag: "🇫🇷", level: 19, money: 7.4e4, startup: 3 },
+  { name: "CaféCode", flag: "🇫🇷", level: 14, money: 2.2e4, startup: 2 },
+  { name: "BretagneBoss", flag: "🇫🇷", level: 9, money: 4200, startup: 2 },
+  { name: "GrenobleGrind", flag: "🇫🇷", level: 5, money: 850, startup: 1 },
+];
+const BOARD_WORLD = [
+  { name: "Zen0", flag: "🇺🇸", level: 412, money: 9.8e9, startup: 18 },
+  { name: "DragonCEO", flag: "🇨🇳", level: 388, money: 7.1e9, startup: 17 },
+  { name: "NeoTokyo", flag: "🇯🇵", level: 350, money: 5.4e9, startup: 16 },
+  { name: "BerlinByte", flag: "🇩🇪", level: 295, money: 2.9e9, startup: 14 },
+  { name: "SeoulStar", flag: "🇰🇷", level: 260, money: 1.6e9, startup: 13 },
+  { name: "MumbaiMogul", flag: "🇮🇳", level: 230, money: 9.8e8, startup: 12 },
+  { name: "LondonLion", flag: "🇬🇧", level: 198, money: 5.4e8, startup: 11 },
+  { name: "RioRocket", flag: "🇧🇷", level: 165, money: 2.3e8, startup: 10 },
+  { name: "DubaiDeals", flag: "🇦🇪", level: 140, money: 1.3e8, startup: 9 },
+  { name: "SydneyScale", flag: "🇦🇺", level: 115, money: 5.8e7, startup: 8 },
+  { name: "LeStratège", flag: "🇫🇷", level: 58, money: 4.2e6, startup: 6 },
+  { name: "TorontoTech", flag: "🇨🇦", level: 44, money: 1.2e6, startup: 5 },
+];
+
+function fmt(n) {
+  if (n < 1000) return n.toFixed(n < 10 && n % 1 !== 0 ? 1 : 0);
+  const u = ["K", "M", "B", "T", "Qa"];
+  let i = -1, x = n;
+  while (x >= 1000 && i < u.length - 1) { x /= 1000; i++; }
+  return x.toFixed(x < 10 ? 2 : x < 100 ? 1 : 0) + u[i];
+}
+const statCost = (s, lvl) => Math.ceil(s.baseCost * Math.pow(s.growth, lvl));
+// Récompenses du Pass par palier (gratuit / premium)
+const freeReward = (tier) => Math.round(300 * Math.pow(1.7, tier));
+const premReward = (tier) => freeReward(tier) * 3;
+function computeIncome(ownedCount, levels) {
+  let total = 0;
+  for (let i = 0; i < ownedCount; i++) {
+    const su = getStartup(i);
+    for (const st of su.stats) total += (levels[`${su.id}_${st.id}`] || 0) * st.income;
+  }
+  return total;
+}
+const startupLevel = (su, levels) => su.stats.reduce((s, st) => s + (levels[`${su.id}_${st.id}`] || 0), 0);
+const startupIncome = (su, levels) => su.stats.reduce((s, st) => s + (levels[`${su.id}_${st.id}`] || 0) * st.income, 0);
+
+function App() {
+  const [money, setMoney] = useState(0);
+  const [owned, setOwned] = useState(1);
+  const [levels, setLevels] = useState({});
+  const [clicks, setClicks] = useState(0);
+  const [premium, setPremium] = useState(false);
+  const [passXP, setPassXP] = useState(0);
+  const [claimedLevel, setClaimedLevel] = useState(0);
+  const [questTier, setQuestTier] = useState({});
+  const [questDone, setQuestDone] = useState({});   // objectifs réclamés
+  const [floats, setFloats] = useState([]);
+  const [offline, setOffline] = useState(null);
+  const [adPlaying, setAdPlaying] = useState(false);
+  const [collectFx, setCollectFx] = useState(null);
+  const [showStore, setShowStore] = useState(false);
+  const [passToast, setPassToast] = useState(null);
+  const [page, setPage] = useState("startups");   // page active
+  const [menuOpen, setMenuOpen] = useState(false); // menu déroulant ouvert ?
+  const [profile, setProfile] = useState(null);    // { provider, name } — connexion simulée
+  const [board, setBoard] = useState("france");    // france | monde
+  const [boardBy, setBoardBy] = useState("level");  // level | money | startup
+  const [prestige, setPrestige] = useState(0);      // points de prestige (bonus permanent)
+  const [perks, setPerks] = useState({});           // arbre de prestige : perkId -> niveau
+  const [theme, setTheme] = useState("emeraude");   // thème sélectionné
+  const [themesOwned, setThemesOwned] = useState({ emeraude: true });
+  const [prices, setPrices] = useState(initPrices);  // bourse : prix actuels
+  const [hist, setHist] = useState(initHist);        // bourse : historique (sparkline)
+  const [holdings, setHoldings] = useState({});      // bourse : actions détenues
+  const [daily, setDaily] = useState({ lastDay: 0, streak: 0 });
+  const [achievements, setAchievements] = useState({}); // id -> true
+  const [boostUntil, setBoostUntil] = useState(0);  // timestamp de fin du x2
+  const [lastAdBoost, setLastAdBoost] = useState(0); // dernier boost pub (cooldown 3h)
+  const [adBoostPlaying, setAdBoostPlaying] = useState(false);
+  const [, setTick] = useState(0);                  // force le rafraîchissement du temps
+  const [dailyModal, setDailyModal] = useState(null);
+  const [prestigeModal, setPrestigeModal] = useState(false);
+  const [achToast, setAchToast] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+
+  const baseIncome = useMemo(() => computeIncome(owned, levels), [owned, levels]);
+  const unlockedAch = useMemo(() => Object.keys(achievements).length, [achievements]);
+  const boostActive = boostUntil > Date.now();
+  const invLvl = perks.inv || 0, clkLvl = perks.clk || 0, offLvl = perks.off || 0, costLvl = perks.cost || 0;
+  const availablePts = prestige - perkSpent(perks);
+  const costMult = 1 - costLvl * 0.02;               // réduction du coût des stats
+  const prestigeMult = 1 + prestige * 0.02;          // +2% par point de prestige (total)
+  const achMult = 1 + unlockedAch * 0.03;            // +3% par succès
+  const metaMult = (premium ? PREMIUM_MULT : 1) * prestigeMult * achMult * (1 + invLvl * 0.1);
+  const incomePerSec = baseIncome * metaMult * (boostActive ? 2 : 1);
+  const perClick = Math.max(1, Math.round(incomePerSec * 0.2 * (1 + clkLvl)));
+  const offlineRate = (premium ? PREMIUM_OFFLINE_RATE : OFFLINE_RATE) + offLvl * 0.05;
+  // Points de prestige gagnés si on revend maintenant
+  const ppGain = Math.floor(Math.sqrt(Math.max(0, money) / 1e6)) + Math.max(0, owned - 1);
+  const today = Math.floor(Date.now() / 86400000);
+  const dailyAvailable = today > (daily.lastDay || 0);
+  const adReady = Date.now() - (lastAdBoost || 0) >= AD_INTERVAL && !boostActive;
+  const rank = RANKS[Math.min(owned - 1, RANKS.length - 1)];
+  const curTheme = THEMES.find((t) => t.id === theme) || THEMES[0];
+  const costOf = (st, lvl) => Math.ceil(statCost(st, lvl) * costMult); // coût après réduction "Soldes"
+  const totalUpgrades = useMemo(() => Object.values(levels).reduce((a, b) => a + b, 0), [levels]);
+  const passLevel = passLevelFromXP(passXP);
+  const passInto = passXP - passCumXP(passLevel);                       // XP dans le niveau courant
+  const passNeed = passLevel < PASS_MAX ? passCumXP(passLevel + 1) - passCumXP(passLevel) : 1; // XP requise pour le suivant
+
+  const metricValue = (m) =>
+    m === "money" ? money : m === "upgrades" ? totalUpgrades : m === "owned" ? owned : m === "clicks" ? clicks : m === "income" ? incomePerSec : 0;
+
+  // Une seule ref qui contient tout l'état à sauvegarder
+  const stateRef = useRef({});
+  stateRef.current = { money, owned, levels, clicks, premium, passXP, claimedLevel, questTier, questDone, prestige, perks, daily, achievements, lastAdBoost, theme, themesOwned, holdings };
+  const incRef = useRef(0); incRef.current = incomePerSec;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get(STORAGE_KEY);
+        if (r && r.value) {
+          const s = JSON.parse(r.value);
+          if (s.lastSeen) {
+            const el = Math.min((Date.now() - s.lastSeen) / 1000, OFFLINE_CAP);
+            const achCount = s.achievements ? Object.keys(s.achievements).length : 0;
+            const pk = s.perks || {};
+            const mult = (s.premium ? PREMIUM_MULT : 1) * (1 + (s.prestige || 0) * 0.02) * (1 + achCount * 0.03) * (1 + (pk.inv || 0) * 0.1);
+            const rate = (s.premium ? PREMIUM_OFFLINE_RATE : OFFLINE_RATE) + (pk.off || 0) * 0.05;
+            const earned = computeIncome(s.owned || 1, s.levels || {}) * mult * el * rate;
+            if (earned > 1) setOffline({ earned, sec: el });
+          }
+          setMoney(s.money || 0); setOwned(s.owned || 1); setLevels(s.levels || {});
+          setClicks(s.clicks || 0); setPremium(!!s.premium); setPassXP(s.passXP || 0);
+          setClaimedLevel(s.claimedLevel || 0); setQuestTier(s.questTier || {}); setQuestDone(s.questDone || {});
+          setPrestige(s.prestige || 0); setDaily(s.daily || { lastDay: 0, streak: 0 });
+          setAchievements(s.achievements || {}); setLastAdBoost(s.lastAdBoost || 0);
+          setPerks(s.perks || {});
+          setTheme(s.theme || "emeraude"); setThemesOwned(s.themesOwned || { emeraude: true });
+          setHoldings(s.holdings || {});
+        }
+      } catch (e) {}
+      try {
+        const p = await window.storage.get(PROFILE_KEY);
+        if (p && p.value) setProfile(JSON.parse(p.value));
+      } catch (e) {}
+      setLoaded(true);
+    })();
+  }, []);
+
+  function save() {
+    try { window.storage.set(STORAGE_KEY, JSON.stringify({ ...stateRef.current, lastSeen: Date.now() })); } catch (e) {}
+  }
+
+  useEffect(() => {
+    const t = setInterval(() => { if (incRef.current > 0) setMoney((m) => m + incRef.current / 10); }, 100);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setInterval(save, 5000);
+    return () => { clearInterval(t); save(); };
+  }, [loaded]);
+  useEffect(() => { if (loaded) save(); }, [owned, levels, premium, passXP, questTier, questDone, prestige, perks, daily, achievements, lastAdBoost, theme, themesOwned, holdings]);
+
+  // Récompense automatique à chaque niveau de Pass gagné
+  useEffect(() => {
+    if (!loaded) return;
+    if (passLevel > claimedLevel) {
+      let reward = 0;
+      for (let t = claimedLevel + 1; t <= passLevel; t++) reward += freeReward(t) + (premium ? premReward(t) : 0);
+      setMoney((m) => m + reward);
+      setClaimedLevel(passLevel);
+      setPassToast({ levels: passLevel - claimedLevel, reward });
+      setTimeout(() => setPassToast(null), 3500);
+    }
+  }, [passXP, loaded]);
+
+  // Succès : déblocage automatique quand la condition est remplie
+  useEffect(() => {
+    if (!loaded) return;
+    const g = { owned, money, clicks, upgrades: totalUpgrades, premium, prestige };
+    let newly = null;
+    const updated = { ...achievements };
+    for (const a of ACHIEVEMENTS)
+      if (!updated[a.id] && a.check(g)) { updated[a.id] = true; if (!newly) newly = a; }
+    if (newly) { setAchievements(updated); setAchToast(newly); setTimeout(() => setAchToast(null), 3500); }
+  }, [owned, money, clicks, totalUpgrades, premium, prestige, achievements, loaded]);
+
+  // Fin du boost x2 : à l'expiration on remet à 0 (force le recalcul du revenu)
+  useEffect(() => {
+    if (boostUntil <= Date.now()) return;
+    const t = setTimeout(() => setBoostUntil(0), boostUntil - Date.now() + 60);
+    return () => clearTimeout(t);
+  }, [boostUntil]);
+
+  // Rafraîchit l'UI liée au temps (réapparition du bouton pub toutes les 3h)
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 20000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Bourse : les cours bougent en marche aléatoire toutes les 2,5s
+  const pricesRef = useRef({}); pricesRef.current = prices;
+  useEffect(() => {
+    const t = setInterval(() => {
+      const cur = pricesRef.current;
+      const next = {};
+      STOCKS.forEach((s) => {
+        const p0 = cur[s.id] ?? s.base;
+        const shock = (Math.random() * 2 - 1) * s.vol;          // ±volatilité
+        const pull = ((s.base - p0) / s.base) * 0.03;           // léger rappel vers la base
+        next[s.id] = Math.max(s.base * 0.2, Math.round(p0 * (1 + shock + pull) * 100) / 100);
+      });
+      setPrices(next);
+      setHist((h) => {
+        const nh = {};
+        STOCKS.forEach((s) => { nh[s.id] = [...(h[s.id] || [s.base]), next[s.id]].slice(-24); });
+        return nh;
+      });
+    }, 2500);
+    return () => clearInterval(t);
+  }, []);
+
+  function work(e) {
+    setMoney((m) => m + perClick);
+    setClicks((c) => c + 1);
+    const rect = e.currentTarget.getBoundingClientRect();
+    const id = Math.random();
+    setFloats((f) => [...f, { id, x: e.clientX - rect.left, y: e.clientY - rect.top, val: perClick }]);
+    setTimeout(() => setFloats((f) => f.filter((o) => o.id !== id)), 850);
+  }
+  function buyStat(su, st) {
+    const key = `${su.id}_${st.id}`;
+    const c = costOf(st, levels[key] || 0);
+    if (money < c) return;
+    setMoney((m) => m - c);
+    setLevels((p) => ({ ...p, [key]: (p[key] || 0) + 1 }));
+  }
+  function buyStartup() {
+    const nx = owned < MAX_STARTUPS ? getStartup(owned) : null;
+    if (!nx || money < nx.cost) return;
+    setMoney((m) => m - nx.cost);
+    setOwned((o) => o + 1);
+  }
+  function claimQuest(q) {
+    const tier = questTier[q.id] || 0;
+    if (tier >= q.targets.length || metricValue(q.metric) < q.targets[tier]) return;
+    setPassXP((x) => x + q.xp[tier]);
+    setQuestTier((p) => ({ ...p, [q.id]: tier + 1 }));
+  }
+  function claimObjective(obj) {
+    if (questDone[obj.id]) return;
+    const g = { owned, money, premium, prestige, levels, holdings, themesOwned };
+    if (!obj.check(g)) return;
+    setPassXP((x) => x + obj.xp);
+    setQuestDone((p) => ({ ...p, [obj.id]: true }));
+  }
+  function collect(mult) {
+    if (!offline) return;
+    const amount = offline.earned * mult;
+    setMoney((m) => m + amount);
+    setOffline(null); setAdPlaying(false);
+    setCollectFx({ amount });
+    setTimeout(() => setCollectFx(null), 1300);
+  }
+  function watchAd() { setAdPlaying(true); setTimeout(() => collect(2), 3000); }
+
+  function watchAdBoost() {
+    if (!adReady) return;
+    setAdBoostPlaying(true);
+    setTimeout(() => {
+      setBoostUntil(Date.now() + AD_BOOST_MS);
+      setLastAdBoost(Date.now());
+      setAdBoostPlaying(false);
+    }, 3000);
+  }
+
+  function doPrestige() {
+    if (ppGain < 1) return;
+    setPrestige((p) => p + ppGain);
+    setMoney(0); setOwned(1); setLevels({}); setClicks(0);
+    setOffline(null); setBoostUntil(0);
+    setPrestigeModal(false); setPage("startups");
+  }
+  function buyPerk(perk) {
+    const lvl = perks[perk.id] || 0;
+    if (lvl >= perk.max) return;
+    const cost = lvl + 1;
+    if (availablePts < cost) return;
+    setPerks((p) => ({ ...p, [perk.id]: (p[perk.id] || 0) + 1 }));
+  }
+  function chooseTheme(t) {
+    if (themesOwned[t.id]) { setTheme(t.id); return; }
+    if (money < t.cost) return;
+    setMoney((m) => m - t.cost);
+    setThemesOwned((o) => ({ ...o, [t.id]: true }));
+    setTheme(t.id);
+  }
+  function buyStock(id, qty) {
+    const cost = (prices[id] || 0) * qty;
+    if (money < cost) return;
+    setMoney((m) => m - cost);
+    setHoldings((h) => ({ ...h, [id]: (h[id] || 0) + qty }));
+  }
+  function sellStock(id, qty) {
+    const own = holdings[id] || 0;
+    const q = Math.min(qty, own);
+    if (q <= 0) return;
+    setMoney((m) => m + (prices[id] || 0) * q);
+    setHoldings((h) => ({ ...h, [id]: own - q }));
+  }
+  function openDaily() {
+    if (!dailyAvailable) { setDailyModal({ claimed: true }); return; }
+    const newStreak = today - (daily.lastDay || 0) === 1 ? (daily.streak || 0) + 1 : 1;
+    const reward = Math.max(1000, Math.round(incomePerSec * 120)) * newStreak;
+    setDailyModal({ streak: newStreak, reward });
+  }
+  function claimDaily() {
+    if (!dailyModal || dailyModal.claimed) return;
+    setMoney((m) => m + dailyModal.reward);
+    setDaily({ lastDay: today, streak: dailyModal.streak });
+    setCollectFx({ amount: dailyModal.reward });
+    setTimeout(() => setCollectFx(null), 1300);
+    setDailyModal(null);
+  }
+  function buyPremium() { setPremium(true); setShowStore(false); }
+  function login(provider, pseudo) {
+    const name = (pseudo || "").trim() || "Fondateur";
+    const p = { provider, name };
+    setProfile(p);
+    try { window.storage.set(PROFILE_KEY, JSON.stringify(p)); } catch (e) {}
+  }
+  function logout() {
+    setProfile(null);
+    setMenuOpen(false);
+    try { window.storage.delete(PROFILE_KEY); } catch (e) {}
+  }
+  function reset() {
+    setMoney(0); setOwned(1); setLevels({}); setClicks(0); setPremium(false);
+    setPassXP(0); setClaimedLevel(0); setQuestTier({}); setOffline(null);
+    setPrestige(0); setPerks({}); setDaily({ lastDay: 0, streak: 0 }); setAchievements({});
+    setTheme("emeraude"); setThemesOwned({ emeraude: true });
+    try { window.storage.delete(STORAGE_KEY); } catch (e) {}
+  }
+  function fmtDuration(s) {
+    s = Math.round(s);
+    if (s < 60) return `${s} s`;
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d} j ${h} h`;
+    if (h > 0) return `${h} h ${m} min`;
+    return `${m} min`;
+  }
+
+  const next = owned < MAX_STARTUPS ? getStartup(owned) : null;
+  const prev = getStartup(owned - 1);
+  const prevLevel = prev ? startupLevel(prev, levels) : 0;
+  const eligible = next ? prevLevel >= prev.unlockNextAt : false;
+
+  if (loaded && !profile) return <LoginView onLogin={login} />;
+
+  return (
+    <div className="app" style={{ "--accent": curTheme.accent, "--accent-bright": curTheme.bright, "--accent-deep": curTheme.deep, "--accent-rgb": curTheme.rgb, "--bg": curTheme.bg }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@600;800&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        .app { min-height: 100vh; color: #EAF6EE; font-family: 'Bricolage Grotesque', sans-serif;
+          background: radial-gradient(800px 500px at 50% -10%, rgba(var(--accent-rgb,52,211,153),0.16), transparent 60%), var(--bg,#07100B); padding: 28px 16px 60px; }
+        .wrap { max-width: 720px; margin: 0 auto; }
+        .topbar { display:flex; margin-bottom:14px; }
+        .dropdown { position:relative; }
+        .ddbtn { display:flex; align-items:center; gap:10px; background:rgba(13,26,18,0.9); border:1px solid #25402F; color:#EAF6EE; font-family:inherit; font-weight:800; font-size:15px; padding:11px 16px; border-radius:12px; cursor:pointer; transition:border-color .15s; }
+        .ddbtn:hover { border-color:var(--accent,#34D399); }
+        .ddbtn .chev { color:var(--accent,#34D399); font-size:12px; }
+        .ddlist { position:absolute; top:calc(100% + 6px); left:0; background:#0E1B13; border:1px solid #25402F; border-radius:12px; padding:6px; min-width:180px; z-index:30; box-shadow:0 14px 36px rgba(0,0,0,.5); animation:pop .18s ease; }
+        .dditem { display:flex; align-items:center; gap:10px; width:100%; background:none; border:none; color:#C6CDDA; font-family:inherit; font-weight:700; font-size:14px; padding:11px 12px; border-radius:9px; cursor:pointer; text-align:left; transition:background .12s, color .12s; }
+        .dditem:hover { background:rgba(var(--accent-rgb,52,211,153),0.08); color:#EAF6EE; }
+        .dditem.on { background:rgba(var(--accent-rgb,52,211,153),0.14); color:var(--accent,#34D399); }
+        .profile { margin-left:auto; display:flex; align-items:center; gap:8px; background:rgba(13,26,18,0.9); border:1px solid #25402F; border-radius:12px; padding:6px 8px 6px 12px; }
+        .profile .pav { width:24px; height:24px; border-radius:50%; background:#25402F; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:13px; }
+        .profile .pnm { font-size:13px; font-weight:700; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .profile .plogout { background:none; border:none; color:#8FA89A; cursor:pointer; font-size:15px; padding:2px 6px; border-radius:7px; }
+        .profile .plogout:hover { color:#F87171; background:rgba(248,113,113,.1); }
+        .lbtabs { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+        .segc { display:inline-flex; border:1px solid #25402F; border-radius:10px; overflow:hidden; }
+        .segc button { background:#0C140E; color:#8FA89A; border:none; padding:9px 14px; font-family:inherit; font-weight:700; font-size:13px; cursor:pointer; }
+        .segc button.on { background:var(--accent,#34D399); color:var(--bg,#07100B); }
+        .lbnote { font-size:13px; color:#8FA89A; margin-bottom:12px; }
+        .lbnote b { color:#FBBF24; font-family:'JetBrains Mono',monospace; }
+        .lblist { display:flex; flex-direction:column; gap:6px; }
+        .lbrow { display:flex; align-items:center; gap:11px; background:rgba(7,16,11,0.5); border:1px solid #16271C; border-radius:10px; padding:10px 12px; }
+        .lbrow.you { background:rgba(var(--accent-rgb,52,211,153),0.12); border-color:var(--accent,#34D399); }
+        .lbrank { font-weight:800; font-size:14px; width:34px; text-align:center; }
+        .lbflag { font-size:17px; }
+        .lbname { font-weight:700; font-size:14px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .lbrow.you .lbname { color:var(--accent,#34D399); }
+        .lbscore { font-family:'JetBrains Mono',monospace; font-weight:800; font-size:13px; color:#FBBF24; }
+        .lbdisc { font-size:12px; color:#6E8478; margin-top:14px; line-height:1.5; }
+        .topright { margin-left:auto; display:flex; align-items:center; gap:10px; }
+        .giftbtn { background:rgba(13,26,18,0.9); border:1px solid #25402F; border-radius:12px; cursor:pointer; font-size:18px; padding:8px 11px; transition:border-color .15s; }
+        .giftbtn:hover { border-color:var(--accent,#34D399); }
+        .giftbtn.glow { border-color:#FBBF24; animation:pulseGlow 1.4s ease-in-out infinite; }
+        .boostbadge { display:inline-block; margin-top:10px; background:rgba(251,191,36,0.15); border:1px solid #FBBF24; color:#FBBF24; font-weight:800; font-size:13px; padding:5px 12px; border-radius:999px; }
+        .adboost { position:relative; display:inline-flex; align-items:center; justify-content:center; width:46px; height:46px; margin-bottom:14px; background:rgba(13,26,18,0.9); border:1px solid #FBBF24; border-radius:12px; cursor:pointer; transition:transform .08s, filter .15s; animation:pulseGlow 1.6s ease-in-out infinite; }
+        .adboost:hover { filter:brightness(1.1); }
+        .adboost:active { transform:scale(.94); }
+        .adboost .adx2 { position:absolute; right:-7px; top:-7px; background:#FBBF24; color:#1A1306; font-size:10px; font-weight:800; padding:1px 5px; border-radius:999px; border:2px solid var(--bg,#07100B); }
+        .prestat { display:flex; gap:14px; margin-bottom:14px; }
+        .prestat > div { flex:1; background:rgba(7,16,11,0.6); border:1px solid #16271C; border-radius:12px; padding:14px; text-align:center; }
+        .prestat .pk { font-size:12px; color:#8FA89A; }
+        .prestat .pv { font-family:'JetBrains Mono',monospace; font-weight:800; font-size:26px; margin-top:4px; }
+        .prestat .pv.gold { color:#FBBF24; }
+        .prestxt { font-size:14px; color:#C6CDDA; line-height:1.5; margin-bottom:14px; }
+        .presgain { font-size:14px; color:#8FA89A; margin-bottom:14px; }
+        .presgain b { color:#FBBF24; font-family:'JetBrains Mono',monospace; }
+        .presbtn { width:100%; border:none; border-radius:12px; cursor:pointer; font-family:inherit; font-weight:800; font-size:15px; padding:13px; }
+        .presbtn.on { background:linear-gradient(90deg,#FBBF24,#F59E0B); color:#1A1306; }
+        .presbtn.off { background:#13241A; color:#4F6358; cursor:not-allowed; }
+        .achlist { display:flex; flex-direction:column; gap:8px; }
+        .ach { display:flex; align-items:center; gap:12px; background:rgba(7,16,11,0.5); border:1px solid #16271C; border-radius:11px; padding:11px 13px; opacity:.6; }
+        .ach.got { opacity:1; border-color:var(--accent,#34D399); background:rgba(var(--accent-rgb,52,211,153),0.07); }
+        .ache { font-size:24px; width:32px; text-align:center; }
+        .achn { font-weight:700; font-size:14px; }
+        .achd { font-size:12px; color:#8FA89A; }
+        .achok { margin-left:auto; color:var(--accent,#34D399); font-weight:800; }
+        .qclaim.off2 { background:#13241A; color:#4F6358; cursor:not-allowed; animation:none; }
+        .themegrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+        @media (max-width:520px) { .themegrid { grid-template-columns:1fr; } }
+        .themecard { border:1px solid #25402F; border-radius:14px; padding:16px; }
+        .themecard.active { border-color:#FBBF24; box-shadow:0 0 0 2px rgba(251,191,36,.25); }
+        .themedots { display:flex; gap:6px; margin-bottom:12px; }
+        .themedots span { width:18px; height:18px; border-radius:50%; box-shadow:0 1px 4px rgba(0,0,0,.4); }
+        .themename { font-weight:800; font-size:16px; color:#fff; margin-bottom:12px; }
+        .themebtn { width:100%; border:none; border-radius:10px; cursor:pointer; font-family:inherit; font-weight:800; font-size:13px; padding:10px; background:rgba(0,0,0,0.35); color:#fff; transition:filter .15s; }
+        .themebtn:hover:not(.off) { filter:brightness(1.1); }
+        .themebtn.off { opacity:.5; cursor:not-allowed; }
+        .stocklist { display:flex; flex-direction:column; gap:8px; }
+        .stock { display:flex; align-items:center; gap:11px; background:rgba(7,16,11,0.5); border:1px solid #16271C; border-radius:12px; padding:11px 13px; }
+        .stockemo { font-size:24px; }
+        .stockmid { min-width:96px; }
+        .stockname { font-weight:800; font-size:14px; }
+        .stockown { font-size:11px; color:var(--accent,#34D399); font-weight:700; }
+        .stockprice { font-family:'JetBrains Mono',monospace; font-weight:700; font-size:13px; margin-top:2px; }
+        .stockpct { font-size:11px; font-weight:800; margin-left:4px; }
+        .stockpct.up { color:#34D399; }
+        .stockpct.down { color:#F87171; }
+        .stockbtns { margin-left:auto; display:flex; flex-direction:column; gap:6px; }
+        .sbtn { border:none; border-radius:8px; cursor:pointer; font-family:inherit; font-weight:800; font-size:12px; padding:7px 12px; min-width:74px; }
+        .sbtn.buy { background:var(--accent,#34D399); color:var(--bg,#07100B); }
+        .sbtn.sell { background:transparent; border:1px solid #F87171; color:#F87171; }
+        .sbtn.off { opacity:.4; cursor:not-allowed; }
+        .toast.ach { border-color:var(--accent,#34D399); color:var(--accent,#34D399); background:#0B1A12; }
+        .head { background: rgba(13,26,18,0.72); border: 1px solid #16271C; border-radius: 18px; padding: 20px; text-align: center; position: relative; overflow: hidden; }
+        .badge { display:inline-block; font-size:11px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; color:var(--bg,#07100B); background:#FBBF24; padding:5px 12px; border-radius:999px; }
+        .total { font-family:'JetBrains Mono',monospace; font-weight:800; font-size:42px; color:var(--accent,#34D399); margin:12px 0 2px; }
+        .total.pulse { animation:totalpulse .6s ease; }
+        .rate { font-size:13px; color:#8FA89A; }
+        .rate b { color:#EAF6EE; font-family:'JetBrains Mono',monospace; }
+        .work { margin-top:16px; border:none; border-radius:12px; cursor:pointer; background:radial-gradient(circle at 35% 30%,var(--accent-bright,#4ADE80),var(--accent-deep,#16A34A) 75%); color:var(--bg,#07100B); font-family:inherit; font-weight:800; font-size:16px; padding:13px 26px; transition:transform .08s; box-shadow:0 8px 20px rgba(0,0,0,.4); }
+        .work:active { transform: scale(0.96); }
+        .float { position:absolute; font-family:'JetBrains Mono',monospace; font-weight:800; color:#FBBF24; pointer-events:none; animation:floatup .85s ease-out forwards; }
+        .collectfx { position:absolute; left:0; right:0; top:56px; text-align:center; font-family:'JetBrains Mono',monospace; font-weight:800; font-size:24px; color:#FBBF24; pointer-events:none; animation:collectup 1.25s ease-out forwards; }
+
+        .panel { background: rgba(13,26,18,0.6); border: 1px solid #16271C; border-radius: 16px; padding: 16px; margin-top: 16px; }
+        .ptitle { font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:#6E8478; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+        .ptitle .star { color:#FBBF24; }
+
+        .passrow { display:flex; align-items:center; gap:12px; }
+        .passlvl { font-family:'JetBrains Mono',monospace; font-weight:800; font-size:26px; color:#FBBF24; min-width:54px; }
+        .passlvl small { display:block; font-family:'Bricolage Grotesque'; font-size:10px; color:#6E8478; letter-spacing:.1em; }
+        .pbar { flex:1; height:10px; background:#13241A; border-radius:99px; overflow:hidden; }
+        .pbar i { display:block; height:100%; background:linear-gradient(90deg,#FBBF24,#F59E0B); transition:width .3s; }
+        .pxp { font-size:12px; color:#8FA89A; min-width:46px; text-align:right; }
+        .prembtn { margin-top:14px; width:100%; border:none; border-radius:12px; cursor:pointer; font-family:inherit; font-weight:800; font-size:14px; padding:12px; background:linear-gradient(90deg,#FBBF24,#F59E0B); color:#1A1306; transition:filter .15s; }
+        .prembtn:hover { filter:brightness(1.06); }
+        .premactive { margin-top:12px; font-size:13px; color:#FBBF24; font-weight:700; text-align:center; }
+        .passhead { text-align:center; margin-bottom:16px; }
+        .passtitle { font-weight:800; font-size:13px; letter-spacing:.14em; color:#FBBF24; }
+        .passlevelbig { font-weight:800; font-size:26px; margin:4px 0 10px; }
+        .passbar { position:relative; height:20px; background:#13241A; border:1px solid #25402F; border-radius:999px; overflow:hidden; }
+        .passbar i { display:block; height:100%; background:linear-gradient(90deg,#FBBF24,#F59E0B); transition:width .3s; }
+        .passbarlvl { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; color:#EAF6EE; text-shadow:0 1px 2px rgba(0,0,0,.6); }
+        .tracktop { display:grid; grid-template-columns:1fr 46px 1fr; gap:10px; align-items:stretch; margin-bottom:10px; }
+        .trackcol-h { display:flex; align-items:center; justify-content:center; font-weight:800; font-size:12px; letter-spacing:.1em; border-radius:10px; padding:10px 6px; text-align:center; font-family:inherit; }
+        .trackcol-h.free { background:rgba(var(--accent-rgb,52,211,153),0.12); color:var(--accent,#34D399); border:1px solid rgba(var(--accent-rgb,52,211,153),0.3); }
+        .trackcol-h.prem { background:linear-gradient(90deg,#FBBF24,#F59E0B); color:#1A1306; border:none; cursor:pointer; }
+        .trackcol-h.prem.owned { cursor:default; }
+        .track { display:flex; flex-direction:column; gap:8px; max-height:56vh; overflow-y:auto; padding-right:4px; }
+        .trackrow { display:grid; grid-template-columns:1fr 46px 1fr; gap:10px; align-items:center; }
+        .tile { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; min-height:62px; border-radius:12px; padding:8px; border:1px solid; }
+        .tile.free { background:rgba(var(--accent-rgb,52,211,153),0.10); border-color:rgba(var(--accent-rgb,52,211,153),0.25); }
+        .tile.prem { background:rgba(251,191,36,0.10); border-color:rgba(251,191,36,0.25); }
+        .tile:not(.on) { opacity:.45; }
+        .tileic { font-size:22px; }
+        .tileqty { font-family:'JetBrains Mono',monospace; font-weight:800; font-size:13px; }
+        .lockic { position:absolute; top:5px; left:6px; font-size:12px; opacity:.9; }
+        .tiernode { width:42px; height:42px; display:flex; align-items:center; justify-content:center; border-radius:11px; font-weight:800; font-size:15px; background:#0E1B13; border:2px solid #2A3B30; color:#6E8478; }
+        .tiernode.done { border-color:var(--accent,#34D399); color:var(--accent,#34D399); }
+        .tiernode.cur { border-color:#FBBF24; color:#FBBF24; box-shadow:0 0 0 3px rgba(251,191,36,.2); }
+
+        .quest { display:flex; align-items:center; gap:12px; padding:10px 0; }
+        .quest + .quest { border-top:1px solid #13241A; }
+        .quest .qe { font-size:22px; width:30px; text-align:center; }
+        .quest .qmid { flex:1; }
+        .quest .qname { font-weight:700; font-size:14px; }
+        .quest .qbar { height:7px; background:#13241A; border-radius:99px; overflow:hidden; margin-top:5px; }
+        .quest .qbar i { display:block; height:100%; background:var(--accent,#34D399); transition:width .3s; }
+        .quest .qgoal { font-size:11px; color:#8FA89A; margin-top:4px; }
+        .qclaim { border:none; border-radius:9px; cursor:pointer; font-family:inherit; font-weight:800; font-size:12px; padding:9px 12px; background:#FBBF24; color:#1A1306; white-space:nowrap; animation:pulseGlow 1.4s ease-in-out infinite; }
+        .qdone { font-size:12px; color:var(--accent,#34D399); font-weight:700; }
+
+        .su { background:rgba(13,26,18,0.6); border:1px solid #16271C; border-radius:16px; padding:16px; margin-top:16px; animation:rise .4s ease; }
+        .su .top { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+        .su .emo { font-size:30px; }
+        .su .nm { font-weight:800; font-size:17px; }
+        .su .sub { font-size:12px; color:#8FA89A; margin-top:1px; }
+        .su .inc { margin-left:auto; text-align:right; }
+        .su .inc .big { font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--accent,#34D399); font-size:15px; }
+        .su .inc .lv { font-size:11px; color:#6E8478; }
+        .stat { display:flex; align-items:center; gap:11px; background:rgba(7,16,11,0.6); border:1px solid #16271C; border-radius:11px; padding:10px 12px; width:100%; cursor:pointer; font-family:inherit; color:#EAF6EE; transition:border-color .15s, transform .08s, background .15s; }
+        .stat + .stat { margin-top:8px; }
+        .stat:disabled { opacity:.45; cursor:not-allowed; }
+        .stat.ok:not(:disabled):hover { border-color:var(--accent,#34D399); background:rgba(var(--accent-rgb,52,211,153),0.06); }
+        .stat:not(:disabled):active { transform: scale(0.99); }
+        .stat .se { font-size:20px; width:26px; text-align:center; }
+        .stat .nm2 { font-weight:700; font-size:14px; }
+        .stat .ds { font-size:11px; color:#8FA89A; }
+        .stat .right { margin-left:auto; text-align:right; }
+        .stat .cost { font-family:'JetBrains Mono',monospace; font-weight:800; font-size:13px; color:#FBBF24; }
+        .stat.ok .cost { color:var(--accent,#34D399); }
+        .stat .lvl { font-size:11px; color:#6E8478; }
+        .lock { border-style:dashed; text-align:center; }
+        .lock .emo { font-size:34px; }
+        .lock .nm { font-weight:800; font-size:17px; margin-top:6px; }
+        .lock .req { font-size:13px; color:#8FA89A; margin:8px 0 12px; }
+        .lock .bar { height:8px; background:#13241A; border-radius:99px; overflow:hidden; margin:8px auto 12px; max-width:320px; }
+        .lock .bar i { display:block; height:100%; background:var(--accent,#34D399); transition:width .3s; }
+        .buy { border:none; border-radius:11px; cursor:pointer; font-family:inherit; font-weight:800; font-size:14px; padding:11px 20px; }
+        .buy.on { background:var(--accent,#34D399); color:var(--bg,#07100B); }
+        .buy.off { background:#13241A; color:#4F6358; cursor:not-allowed; }
+
+        .foot { margin-top:22px; text-align:center; }
+        .reset { background:none; border:1px solid #2A3B30; color:#6E8478; border-radius:9px; padding:8px 14px; font-size:12px; font-family:inherit; cursor:pointer; }
+        .reset:hover { border-color:#F87171; color:#F87171; }
+
+        .modal { position:fixed; inset:0; z-index:50; background:rgba(5,10,7,0.82); display:flex; align-items:center; justify-content:center; padding:20px; animation:fadein .25s ease; }
+        .sheet { background:#0E1B13; border:1px solid #1E3326; border-radius:20px; padding:28px 24px; max-width:360px; width:100%; text-align:center; box-shadow:0 20px 60px rgba(0,0,0,.6); animation:pop .3s ease; }
+        .welicon { font-size:44px; }
+        .weltitle { font-weight:800; font-size:22px; margin-top:6px; }
+        .welsub { font-size:13px; color:#8FA89A; margin-top:2px; }
+        .welamount { font-family:'JetBrains Mono',monospace; font-weight:800; font-size:36px; color:var(--accent,#34D399); margin:16px 0 2px; }
+        .welnote { font-size:12px; color:#6E8478; margin-bottom:22px; }
+        .welbtn { width:100%; border:none; border-radius:12px; cursor:pointer; font-family:inherit; font-weight:800; font-size:15px; padding:13px; transition:transform .08s, filter .15s, background .15s; }
+        .welbtn:active { transform:scale(.98); }
+        .welbtn.primary { background:var(--accent,#34D399); color:var(--bg,#07100B); }
+        .welbtn.gold { background:linear-gradient(90deg,#FBBF24,#F59E0B); color:#1A1306; margin-top:10px; }
+        .welbtn.ad { background:transparent; border:1px solid #FBBF24; color:#FBBF24; margin-top:10px; font-size:14px; }
+        .welbtn.ghost { background:transparent; border:1px solid #2A3B30; color:#8FA89A; margin-top:10px; font-size:13px; }
+        .perks { text-align:left; margin:6px 0 18px; }
+        .perks li { list-style:none; font-size:14px; padding:7px 0; border-bottom:1px solid #13241A; display:flex; gap:9px; }
+        .adscreen { position:absolute; inset:0; background:#05080A; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:24px; }
+        .adspin { width:46px; height:46px; border-radius:50%; border:4px solid #1E3326; border-top-color:#FBBF24; animation:spin .8s linear infinite; }
+        .adtxt { font-weight:800; font-size:18px; }
+        .adsub { font-size:12px; color:#6E8478; max-width:250px; text-align:center; line-height:1.4; }
+        .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#1A1306; border:1px solid #FBBF24; color:#FBBF24; padding:12px 18px; border-radius:12px; font-weight:700; font-size:14px; z-index:40; animation:pop .3s ease; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+
+        @keyframes floatup { from{ opacity:1; transform:translateY(0);} to{ opacity:0; transform:translateY(-50px);} }
+        @keyframes rise { from{ opacity:0; transform:translateY(8px);} to{ opacity:1; transform:translateY(0);} }
+        @keyframes collectup { 0%{ opacity:0; transform:translateY(18px) scale(.8);} 22%{ opacity:1; transform:translateY(0) scale(1);} 100%{ opacity:0; transform:translateY(-22px) scale(1);} }
+        @keyframes totalpulse { 0%,100%{ transform:scale(1);} 40%{ transform:scale(1.1);} }
+        @keyframes fadein { from{ opacity:0;} to{ opacity:1;} }
+        @keyframes pop { from{ opacity:0; transform:scale(.94);} to{ opacity:1; transform:scale(1);} }
+        @keyframes spin { to{ transform:rotate(360deg);} }
+        @keyframes pulseGlow { 0%,100%{ box-shadow:0 0 0 0 rgba(251,191,36,.5);} 50%{ box-shadow:0 0 0 6px rgba(251,191,36,0);} }
+      `}</style>
+
+      <div className="wrap">
+        <div className="topbar">
+          <div className="dropdown">
+            <button className="ddbtn" onClick={() => setMenuOpen((o) => !o)}>
+              {PAGE_INFO[page].emoji} {PAGE_INFO[page].label} <span className="chev">{menuOpen ? "▴" : "▾"}</span>
+            </button>
+            {menuOpen && (
+              <div className="ddlist">
+                {Object.entries(PAGE_INFO).map(([key, info]) => (
+                  <button key={key} className={"dditem" + (page === key ? " on" : "")}
+                    onClick={() => { setPage(key); setMenuOpen(false); }}>
+                    {info.emoji} {info.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="topright">
+            <button className={"giftbtn" + (dailyAvailable ? " glow" : "")} onClick={openDaily} title="Récompense quotidienne">🎁</button>
+            {profile && (
+              <div className="profile">
+                <span className="pav">{PROVIDERS.find((p) => p.id === profile.provider)?.icon || "👤"}</span>
+                <span className="pnm">{profile.name}</span>
+                <button className="plogout" onClick={logout} title="Se déconnecter">↩</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {adReady && (
+          <button className="adboost" onClick={watchAdBoost} title="Regarder une pub pour un boost ×2">
+            <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="5.4" width="18" height="4.3" rx="1.2" fill="#FBBF24" />
+              <g stroke="#0E1B13" strokeWidth="1.1">
+                <line x1="6.2" y1="5.7" x2="4.8" y2="9.4" />
+                <line x1="10.2" y1="5.7" x2="8.8" y2="9.4" />
+                <line x1="14.2" y1="5.7" x2="12.8" y2="9.4" />
+                <line x1="18.2" y1="5.7" x2="16.8" y2="9.4" />
+              </g>
+              <rect x="3" y="10" width="18" height="9.6" rx="1.6" fill="#FBBF24" />
+              <polygon points="10,12.6 15.6,14.8 10,17" fill="#0E1B13" />
+            </svg>
+            <span className="adx2">×2</span>
+          </button>
+        )}
+
+        <div className="head">
+          <span className="badge">{rank} · {owned} startup{owned > 1 ? "s" : ""}{premium ? " · ⭐" : ""}{prestige > 0 ? ` · 🔄 +${Math.round(prestige * 2)}%` : ""}</span>
+          <div className={"total" + (collectFx ? " pulse" : "")}>{fmt(money)} €</div>
+          {collectFx && <div className="collectfx">+{fmt(collectFx.amount)} €</div>}
+          <div className="rate"><b>{fmt(incomePerSec)} €/s</b> · <b>{fmt(perClick)} €</b> / clic</div>
+          {boostActive && <div className="boostbadge">⚡ Boost ×2 actif</div>}
+          <button className="work" onClick={work}>💼 Bosser</button>
+          {floats.map((f) => <span className="float" key={f.id} style={{ left: f.x, top: f.y }}>+{fmt(f.val)}</span>)}
+        </div>
+
+        {page === "pass" && (
+        <div className="panel">
+          <div className="passhead">
+            <div className="passtitle">★ PASS DE SAISON ★</div>
+            <div className="passlevelbig">Niveau {passLevel}</div>
+            <div className="passbar">
+              <i style={{ width: `${passLevel >= PASS_MAX ? 100 : (passInto / passNeed) * 100}%` }} />
+              <span className="passbarlvl">{passLevel >= PASS_MAX ? "Niveau max atteint !" : `${passInto} / ${passNeed} ★ → niv. ${passLevel + 1}`}</span>
+            </div>
+          </div>
+
+          <div className="tracktop">
+            <div className="trackcol-h free">GRATUIT</div>
+            <div />
+            {premium ? (
+              <div className="trackcol-h prem owned">⭐ PREMIUM</div>
+            ) : (
+              <button className="trackcol-h prem" onClick={() => setShowStore(true)}>⭐ PREMIUM · 4,99 €</button>
+            )}
+          </div>
+
+          <div className="track">
+            {Array.from({ length: PASS_MAX }, (_, k) => k + 1).map((tier) => {
+              const unlocked = passLevel >= tier;
+              return (
+                <div className="trackrow" key={tier}>
+                  <div className={"tile free" + (unlocked ? " on" : "")}>
+                    {!unlocked && <span className="lockic">🔒</span>}
+                    <span className="tileic">💰</span>
+                    <span className="tileqty">{fmt(freeReward(tier))}</span>
+                  </div>
+                  <div className={"tiernode" + (passLevel === tier ? " cur" : unlocked ? " done" : "")}>{tier}</div>
+                  <div className={"tile prem" + (unlocked && premium ? " on" : "")}>
+                    {(!unlocked || !premium) && <span className="lockic">🔒</span>}
+                    <span className="tileic">💰</span>
+                    <span className="tileqty">{fmt(premReward(tier))}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="lbdisc" style={{ marginTop: 14 }}>
+            {premium
+              ? "Pass Premium actif : +25% de revenus, hors-ligne à 50%, et tu touches les deux pistes."
+              : "Sans Premium, tu ne reçois que la piste gratuite. Gagne des niveaux en réclamant des quêtes."}
+          </div>
+        </div>
+        )}
+
+        {page === "quetes" && (
+        <div className="panel">
+          <div className="ptitle">Quêtes</div>
+          {QUESTS.map((q) => {
+            const tier = questTier[q.id] || 0;
+            const done = tier >= q.targets.length;
+            const target = done ? q.targets[q.targets.length - 1] : q.targets[tier];
+            const val = metricValue(q.metric);
+            const ready = !done && val >= target;
+            const goalTxt = q.money ? `${fmt(target)} €` : `${target} ${q.unit}`;
+            return (
+              <div className="quest" key={q.id}>
+                <span className="qe">{q.emoji}</span>
+                <div className="qmid">
+                  <div className="qname">{q.label} · {q.verb} {goalTxt}</div>
+                  {!done && <div className="qbar"><i style={{ width: `${Math.min(100, (val / target) * 100)}%` }} /></div>}
+                  <div className="qgoal">{done ? "Toutes les étapes terminées 🎉" : `${q.money ? fmt(val) + " €" : Math.floor(val)} / ${goalTxt}`}</div>
+                </div>
+                {done ? <span className="qdone">✓</span>
+                  : ready ? <button className="qclaim" onClick={() => claimQuest(q)}>Réclamer +{q.xp[tier]}</button>
+                  : <span className="qgoal">+{q.xp[tier]} XP</span>}
+              </div>
+            );
+          })}
+
+          <div className="ptitle" style={{ marginTop: 20 }}>🎯 Objectifs</div>
+          {(() => {
+            const g = { owned, money, premium, prestige, levels, holdings, themesOwned };
+            return OBJECTIVES.map((obj) => {
+              const claimed = !!questDone[obj.id];
+              const ready = !claimed && obj.check(g);
+              return (
+                <div className="quest" key={obj.id}>
+                  <span className="qe">{claimed ? "✅" : obj.emoji}</span>
+                  <div className="qmid">
+                    <div className="qname">{obj.label}</div>
+                    <div className="qgoal">{claimed ? "Réclamé 🎉" : `Récompense : +${obj.xp} XP`}</div>
+                  </div>
+                  {claimed ? <span className="qdone">✓</span>
+                    : ready ? <button className="qclaim" onClick={() => claimObjective(obj)}>Réclamer +{obj.xp}</button>
+                    : <span className="qgoal">🔒</span>}
+                </div>
+              );
+            });
+          })()}
+        </div>
+        )}
+
+        {page === "startups" && (<>
+        {Array.from({ length: owned }, (_, i) => getStartup(i)).map((su) => (
+          <div className="su" key={su.id}>
+            <div className="top">
+              <span className="emo">{su.emoji}</span>
+              <div>
+                <div className="nm">{su.name}</div>
+                <div className="sub">Niveau {startupLevel(su, levels)}{su.unlockNextAt < 999 ? ` / ${su.unlockNextAt} pour débloquer la suite` : ""}</div>
+              </div>
+              <div className="inc">
+                <div className="big">+{fmt(startupIncome(su, levels) * (premium ? PREMIUM_MULT : 1))} €/s</div>
+                <div className="lv">revenu</div>
+              </div>
+            </div>
+            {su.stats.map((st) => {
+              const lvl = levels[`${su.id}_${st.id}`] || 0;
+              const c = costOf(st, lvl);
+              const can = money >= c;
+              return (
+                <button key={st.id} className={"stat" + (can ? " ok" : "")} disabled={!can} onClick={() => buyStat(su, st)}>
+                  <span className="se">{st.emoji}</span>
+                  <div>
+                    <div className="nm2">{st.name}</div>
+                    <div className="ds">+{fmt(st.income)} €/s par niveau</div>
+                  </div>
+                  <div className="right">
+                    <div className="cost">{fmt(c)} €</div>
+                    <div className="lvl">niv. {lvl}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+
+        {next && (
+          <div className="su lock">
+            <div className="emo">{eligible ? next.emoji : "🔒"}</div>
+            <div className="nm">{next.name}</div>
+            {!eligible ? (
+              <>
+                <div className="req">Fais monter <b>{prev.name}</b> au niveau {prev.unlockNextAt} ({prevLevel}/{prev.unlockNextAt}).</div>
+                <div className="bar"><i style={{ width: `${Math.min(100, (prevLevel / prev.unlockNextAt) * 100)}%` }} /></div>
+                <button className="buy off" disabled>🔒 Verrouillée</button>
+              </>
+            ) : (
+              <>
+                <div className="req">Débloquée ! Rachète-la pour une nouvelle source de revenus.</div>
+                <button className={"buy " + (money >= next.cost ? "on" : "off")} disabled={money < next.cost} onClick={buyStartup}>
+                  Acheter pour {fmt(next.cost)} €
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {!next && <div className="su lock"><div className="emo">👑</div><div className="nm">Empire complet !</div></div>}
+
+        <div className="foot"><button className="reset" onClick={reset}>↺ Tout recommencer</button></div>
+        </>)}
+
+        {page === "classement" && (() => {
+          const pool = board === "france" ? BOARD_FR : BOARD_WORLD;
+          const me = { name: profile ? profile.name : "Toi", flag: "🇫🇷", level: totalUpgrades, money, startup: owned, you: true };
+          const list = [...pool.map((p) => ({ ...p })), me]
+            .sort((a, b) => (boardBy === "money" ? b.money - a.money : boardBy === "startup" ? b.startup - a.startup : b.level - a.level));
+          const myRank = list.findIndex((p) => p.you) + 1;
+          return (
+            <div className="panel">
+              <div className="ptitle">🏆 Classement</div>
+              <div className="lbtabs">
+                <div className="segc">
+                  <button className={board === "france" ? "on" : ""} onClick={() => setBoard("france")}>🇫🇷 France</button>
+                  <button className={board === "monde" ? "on" : ""} onClick={() => setBoard("monde")}>🌍 Monde</button>
+                </div>
+                <div className="segc">
+                  <button className={boardBy === "level" ? "on" : ""} onClick={() => setBoardBy("level")}>Niveau</button>
+                  <button className={boardBy === "money" ? "on" : ""} onClick={() => setBoardBy("money")}>Argent</button>
+                  <button className={boardBy === "startup" ? "on" : ""} onClick={() => setBoardBy("startup")}>Startups</button>
+                </div>
+              </div>
+              <div className="lbnote">Ta position : <b>#{myRank}</b> sur {list.length}{board === "monde" ? " (top mondial)" : " (France)"}</div>
+              <div className="lblist">
+                {list.map((p, i) => {
+                  const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
+                  return (
+                    <div className={"lbrow" + (p.you ? " you" : "")} key={p.name + i}>
+                      <span className="lbrank">{medal}</span>
+                      <span className="lbflag">{p.flag}</span>
+                      <span className="lbname">{p.name}{p.you ? " (toi)" : ""}</span>
+                      <span className="lbscore">{boardBy === "money" ? fmt(p.money) + " €" : boardBy === "startup" ? "Startup n°" + p.startup : "Niv. " + Math.floor(p.level)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="lbdisc">🔒 Démo : les autres joueurs sont simulés. Un vrai classement mondial nécessiterait un serveur partagé.</div>
+            </div>
+          );
+        })()}
+
+        {page === "prestige" && (
+          <div className="panel">
+            <div className="ptitle">🔄 Prestige</div>
+            <div className="prestat">
+              <div><div className="pk">Points dispo</div><div className="pv gold">{availablePts}</div></div>
+              <div><div className="pk">Bonus de base</div><div className="pv">+{Math.round(prestige * 2)}%</div></div>
+              <div><div className="pk">Total gagné</div><div className="pv">{prestige}</div></div>
+            </div>
+            <p className="prestxt">Revends tout ton empire à des investisseurs. Tu repars de zéro (argent et startups remis à plat), mais tu gardes tes <b>points de prestige</b> à dépenser ci-dessous, et un bonus de base permanent.</p>
+            <div className="presgain">En revendant maintenant : <b>+{ppGain}</b> point{ppGain > 1 ? "s" : ""} de prestige</div>
+            <button className={"presbtn " + (ppGain >= 1 ? "on" : "off")} disabled={ppGain < 1} onClick={() => setPrestigeModal(true)}>
+              {ppGain >= 1 ? "💼 Revendre l'empire" : "Progresse encore pour pouvoir revendre"}
+            </button>
+
+            <div className="ptitle" style={{ marginTop: 22 }}>🌳 Arbre de prestige</div>
+            <div className="achlist">
+              {PERKS.map((perk) => {
+                const lvl = perks[perk.id] || 0;
+                const maxed = lvl >= perk.max;
+                const cost = lvl + 1;
+                const can = !maxed && availablePts >= cost;
+                return (
+                  <div className={"ach" + (lvl > 0 ? " got" : "")} key={perk.id}>
+                    <span className="ache">{perk.emoji}</span>
+                    <div className="achmid">
+                      <div className="achn">{perk.name} <span style={{ color: "#6E8478", fontWeight: 400 }}>niv. {lvl}/{perk.max}</span></div>
+                      <div className="achd">{perk.desc}</div>
+                    </div>
+                    {maxed ? (
+                      <span className="achok">MAX</span>
+                    ) : (
+                      <button className={"qclaim" + (can ? "" : " off2")} disabled={!can} onClick={() => buyPerk(perk)}>
+                        {cost} pt{cost > 1 ? "s" : ""}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {page === "succes" && (
+          <div className="panel">
+            <div className="ptitle">🏅 Succès · +3% de revenus chacun</div>
+            <div className="achlist">
+              {ACHIEVEMENTS.map((a) => {
+                const got = !!achievements[a.id];
+                return (
+                  <div className={"ach" + (got ? " got" : "")} key={a.id}>
+                    <span className="ache">{got ? a.emoji : "🔒"}</span>
+                    <div className="achmid">
+                      <div className="achn">{a.name}</div>
+                      <div className="achd">{a.desc}</div>
+                    </div>
+                    {got && <span className="achok">✓</span>}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="lbdisc">Débloqués : {unlockedAch}/{ACHIEVEMENTS.length} · bonus actuel +{unlockedAch * 3}%</div>
+          </div>
+        )}
+
+        {page === "boutique" && (
+          <div className="panel">
+            <div className="ptitle">🎨 Thèmes</div>
+            <div className="lbdisc" style={{ marginTop: 0, marginBottom: 14 }}>Change l'ambiance du jeu. Cosmétique uniquement — aucun avantage de jeu, juste du style.</div>
+            <div className="themegrid">
+              {THEMES.map((t) => {
+                const ownedT = !!themesOwned[t.id];
+                const active = theme === t.id;
+                const canBuy = ownedT || money >= t.cost;
+                return (
+                  <div className={"themecard" + (active ? " active" : "")} key={t.id}
+                    style={{ background: `linear-gradient(150deg, ${t.bg}, ${t.deep})` }}>
+                    <div className="themedots">
+                      <span style={{ background: t.accent }} />
+                      <span style={{ background: t.bright }} />
+                      <span style={{ background: "#FBBF24" }} />
+                    </div>
+                    <div className="themename">{t.name}</div>
+                    <button className={"themebtn" + (canBuy ? "" : " off")} disabled={!canBuy && !ownedT}
+                      onClick={() => chooseTheme(t)}
+                      style={ownedT ? { background: t.accent, color: t.bg } : {}}>
+                      {active ? "✓ Actif" : ownedT ? "Choisir" : `Débloquer · ${fmt(t.cost)} €`}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {page === "bourse" && (() => {
+          const portfolio = STOCKS.reduce((s, st) => s + (holdings[st.id] || 0) * (prices[st.id] || 0), 0);
+          return (
+            <div className="panel">
+              <div className="ptitle">📈 Bourse</div>
+              <div className="prestat" style={{ marginBottom: 14 }}>
+                <div><div className="pk">Portefeuille</div><div className="pv gold">{fmt(portfolio)} €</div></div>
+                <div><div className="pk">Liquidités</div><div className="pv">{fmt(money)} €</div></div>
+              </div>
+              <div className="stocklist">
+                {STOCKS.map((st) => {
+                  const h = hist[st.id] || [st.base];
+                  const price = prices[st.id] || st.base;
+                  const prevP = h.length > 1 ? h[h.length - 2] : price;
+                  const pct = prevP ? ((price - prevP) / prevP) * 100 : 0;
+                  const up = pct >= 0;
+                  const own = holdings[st.id] || 0;
+                  return (
+                    <div className="stock" key={st.id}>
+                      <span className="stockemo">{st.emoji}</span>
+                      <div className="stockmid">
+                        <div className="stockname">{st.name} {own > 0 && <span className="stockown">×{own}</span>}</div>
+                        <div className="stockprice">
+                          {fmt(price)} € <span className={"stockpct " + (up ? "up" : "down")}>{up ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%</span>
+                        </div>
+                      </div>
+                      <Spark data={h} up={up} />
+                      <div className="stockbtns">
+                        <button className={"sbtn buy" + (money >= price ? "" : " off")} disabled={money < price} onClick={() => buyStock(st.id, 1)}>Acheter</button>
+                        <button className={"sbtn sell" + (own > 0 ? "" : " off")} disabled={own <= 0} onClick={() => sellStock(st.id, own)}>Vendre</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="lbdisc" style={{ marginTop: 14 }}>Les cours montent et descendent en temps réel. Achète bas, revends haut… mais tu peux aussi perdre. « Vendre » liquide toute ta position.</div>
+            </div>
+          );
+        })()}
+      </div>
+
+      {offline && (
+        <div className="modal">
+          <div className="sheet">
+            <div className="welicon">💤</div>
+            <div className="weltitle">Bon retour !</div>
+            <div className="welsub">Absent pendant {fmtDuration(offline.sec)}</div>
+            <div className="welamount">+{fmt(offline.earned)} €</div>
+            <div className="welnote">{Math.round(offlineRate * 100)} % de ton revenu hors-ligne (max 3 jours)</div>
+            <button className="welbtn primary" onClick={() => collect(1)}>Récupérer</button>
+            <button className="welbtn ad" onClick={watchAd}>Récupérer ×2 · 📺 Regarder une pub</button>
+          </div>
+          {adPlaying && (
+            <div className="adscreen">
+              <div className="adspin" />
+              <div className="adtxt">Pub en cours…</div>
+              <div className="adsub">(simulation — un vrai jeu afficherait ici une vraie pub via un SDK type AdMob)</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {showStore && (
+        <div className="modal">
+          <div className="sheet">
+            <div className="welicon">⭐</div>
+            <div className="weltitle">Pass Premium</div>
+            <ul className="perks">
+              <li>🚀 <span><b>+25 %</b> de revenus en permanence</span></li>
+              <li>💤 Gains hors-ligne à <b>50 %</b> (au lieu de 25 %)</li>
+              <li>🎁 Récompenses du Pass <b>doublées</b></li>
+            </ul>
+            <button className="welbtn gold" onClick={buyPremium}>Activer (simulation)</button>
+            <button className="welbtn ghost" onClick={() => setShowStore(false)}>Plus tard</button>
+            <div className="welnote" style={{ marginTop: 12, marginBottom: 0 }}>Démo : aucun vrai paiement. Un vrai achat passerait par Stripe ou les stores.</div>
+          </div>
+        </div>
+      )}
+
+      {passToast && (
+        <div className="toast">⭐ Pass niveau +{passToast.levels} ! Récompense : +{fmt(passToast.reward)} €</div>
+      )}
+
+      {achToast && (
+        <div className="toast ach">🏅 Succès débloqué : {achToast.emoji} {achToast.name} (+3%)</div>
+      )}
+
+      {dailyModal && (
+        <div className="modal" onClick={() => setDailyModal(null)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="welicon">🎁</div>
+            <div className="weltitle">Récompense quotidienne</div>
+            {dailyModal.claimed ? (
+              <>
+                <div className="welnote" style={{ margin: "14px 0 20px" }}>Déjà réclamée aujourd'hui. Reviens demain pour continuer ta série !</div>
+                <button className="welbtn primary" onClick={() => setDailyModal(null)}>OK</button>
+              </>
+            ) : (
+              <>
+                <div className="welsub">Série : {dailyModal.streak} jour{dailyModal.streak > 1 ? "s" : ""} 🔥</div>
+                <div className="welamount">+{fmt(dailyModal.reward)} €</div>
+                <div className="welnote">Reviens chaque jour pour une récompense de plus en plus grosse.</div>
+                <button className="welbtn primary" onClick={claimDaily}>Réclamer</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {prestigeModal && (
+        <div className="modal">
+          <div className="sheet">
+            <div className="welicon">🔄</div>
+            <div className="weltitle">Revendre l'empire ?</div>
+            <div className="welnote" style={{ margin: "12px 0 18px" }}>
+              Tu vas perdre ton argent et tes startups, mais gagner <b style={{ color: "#FBBF24" }}>+{ppGain} point{ppGain > 1 ? "s" : ""} de prestige</b> (bonus permanent de +{Math.round((prestige + ppGain) * 2)}% au total).
+            </div>
+            <button className="welbtn gold" onClick={doPrestige}>Confirmer la revente</button>
+            <button className="welbtn ghost" onClick={() => setPrestigeModal(false)}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      {adBoostPlaying && (
+        <div className="modal">
+          <div className="sheet">
+            <div className="adspin" style={{ margin: "4px auto 16px" }} />
+            <div className="adtxt">Pub en cours…</div>
+            <div className="adsub" style={{ marginTop: 8 }}>(simulation) Ton boost ×2 arrive juste après !</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Mini graphique (sparkline) pour la bourse
+function Spark({ data, up }) {
+  const w = 64, h = 30;
+  const min = Math.min(...data), max = Math.max(...data), range = max - min || 1;
+  const pts = data.map((v, i) => {
+    const x = (i / Math.max(1, data.length - 1)) * w;
+    const y = h - ((v - min) / range) * (h - 4) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ flexShrink: 0 }}>
+      <polyline points={pts} fill="none" stroke={up ? "#34D399" : "#F87171"} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Écran de connexion — interface réelle, mais connexion SIMULÉE (pas de vrai compte).
+function LoginView({ onLogin }) {
+  const [pseudo, setPseudo] = useState("");
+  return (
+    <div className="login">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        .login { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
+          font-family:'Bricolage Grotesque',sans-serif; color:#EAF6EE;
+          background: radial-gradient(700px 500px at 50% -10%, rgba(var(--accent-rgb,52,211,153),0.18), transparent 60%), var(--bg,#07100B); }
+        .lcard { width:100%; max-width:360px; text-align:center; }
+        .llogo { font-size:56px; }
+        .ltitle { font-weight:800; font-size:28px; margin-top:8px; }
+        .lsub { color:#8FA89A; font-size:14px; margin-top:6px; margin-bottom:24px; }
+        .linp { width:100%; background:#0E1B13; border:1px solid #25402F; color:#EAF6EE; border-radius:12px; padding:13px 14px; font-size:15px; font-family:inherit; outline:none; margin-bottom:16px; text-align:center; }
+        .linp:focus { border-color:var(--accent,#34D399); }
+        .lbtn { width:100%; display:flex; align-items:center; justify-content:center; gap:10px; border-radius:12px; padding:13px; font-family:inherit; font-weight:800; font-size:15px; cursor:pointer; margin-bottom:11px; transition:transform .08s, filter .15s; }
+        .lbtn:active { transform:scale(.98); }
+        .lbtn:hover { filter:brightness(1.04); }
+        .lbtn .ic { width:24px; height:24px; border-radius:50%; background:rgba(0,0,0,0.12); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:14px; }
+        .ldisc { font-size:12px; color:#6E8478; margin-top:16px; line-height:1.5; }
+      `}</style>
+      <div className="lcard">
+        <div className="llogo">🚀</div>
+        <div className="ltitle">Startup Tycoon</div>
+        <div className="lsub">Connecte-toi pour sauvegarder ta progression</div>
+        <input className="linp" placeholder="Ton pseudo (optionnel)" value={pseudo}
+          onChange={(e) => setPseudo(e.target.value)} maxLength={20} />
+        {PROVIDERS.map((p) => (
+          <button key={p.id} className="lbtn"
+            style={{ background: p.bg, color: p.fg, border: `1px solid ${p.bd}` }}
+            onClick={() => onLogin(p.id, pseudo)}>
+            <span className="ic">{p.icon}</span>{p.label}
+          </button>
+        ))}
+        <div className="ldisc">🔒 Démo : connexion simulée, aucun compte réel n'est créé.
+          Une vraie connexion Google/Facebook/iCloud nécessite un serveur d'authentification.</div>
+      </div>
+    </div>
+  );
+}
+
+try {
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(<App />);
+} catch (e) { if (window.__show) window.__show('Erreur au demarrage : ' + ((e && e.stack) || e)); }
+</script>
+</body>
+</html>
